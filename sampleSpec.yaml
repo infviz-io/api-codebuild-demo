@@ -1,0 +1,33 @@
+version: 0.2
+# --- Required Code Build Environment Variables ---
+# INFVIZ_COMPANY : This is your unique infviz company id
+# INFVIZ_KEY : This is your unique infviz api key
+#
+# --- Customization ---
+# -t demo.yaml : Change this to your cloudformation json or yaml files
+# -p demo-params.json : Optional to provide parameter overrides
+# -o 'svg,pdf' : Change to your prefer output types. Available options svg, png, md, html, pdf
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.8
+    commands:
+      - echo "Installing phase"
+      - pip install cfn_flip
+  build:
+    commands:
+      - echo "Build phase"
+      # Option 1: Leverage infviz script to interact with the apis
+      - echo "OPTION 1 - Use the infviz generate helper"
+      - curl https://studio.infviz.io/helper/generate/generate.py --output generate.py
+      - python3 generate.py -c ${INFVIZ_COMPANY} -k ${INFVIZ_KEY} -t demo.yaml -p demo-params.json -o 'svg,pdf'
+      # Option 2: Interact with infviz apis directly
+      - echo "OPTION 2 - Use direct infviz api"
+      - if [ ! -d "infviz" ]; then mkdir infviz; fi
+      - 'curl https://api.studio.infviz.io/auto/company/${INFVIZ_COMPANY}/aws/html -X POST --data-binary @demo.yaml -H "x-api-key: ${INFVIZ_KEY}" --output ./infviz/demo.yaml.html'
+
+artifacts:
+  base-directory: infviz
+  files:
+    - '**/*'

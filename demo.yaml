@@ -1,0 +1,424 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Setup of InfViz Demo 1 environment which includes VPC, EC2, ELB, RDS, ElasticSearch, SQS, SNS 
+
+## Parameters ##
+
+Parameters:
+  envName:
+    Description: Environment name
+    Type: String
+    Default: demo1
+
+## Resources ##
+Resources:
+## VPC Creation ##
+  VPC:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: 10.1.0.0/21
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      InstanceTenancy: default
+      Tags:
+      - Key: Name
+        Value: !Join ['-', [!Ref envName, 'VPC' ]]    
+
+## Subnet Creation ##
+  SubnetAPublic:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      AvailabilityZone: ap-southeast-2a
+      CidrBlock: 10.0.0.0/24
+      MapPublicIpOnLaunch: true
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: PublicA
+  SubnetBPublic:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      AvailabilityZone: ap-southeast-2b
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: true
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: PublicB
+  SubnetCPublic:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      AvailabilityZone: ap-southeast-2c
+      CidrBlock: 10.0.2.0/24
+      MapPublicIpOnLaunch: true
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: PublicC
+  SubnetAPrivate:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      AvailabilityZone: ap-southeast-2a
+      CidrBlock: 10.0.3.0/24
+      MapPublicIpOnLaunch: true
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: PrivateA
+  SubnetBPrivate:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      AvailabilityZone: ap-southeast-2b
+      CidrBlock: 10.0.4.0/24
+      MapPublicIpOnLaunch: true
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: PrivateB
+  SubnetCPrivate:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      AvailabilityZone: ap-southeast-2c
+      CidrBlock: 10.0.5.0/24
+      MapPublicIpOnLaunch: true
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: PrivateC
+
+## IGW & NAT Gateway ##
+  InternetGateway:
+    Type: 'AWS::EC2::InternetGateway'
+    Properties:
+      Tags:
+      - Key: Name
+        Value: !Ref envName
+  InternetGatewayAttach:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties: 
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+  EIPNatB:
+    Type: 'AWS::EC2::EIP'
+    Properties:
+      Domain: vpc
+  NATGatewayB:
+    Type: 'AWS::EC2::NatGateway'
+    Properties:
+      AllocationId: !GetAtt EIPNatB.AllocationId
+      SubnetId: !Ref SubnetBPublic
+      Tags:
+      - Key: Name
+        Value: !Join ['-', [!Ref envName, 'NATGW-AZB' ]]     
+
+## Route Table Creation ##
+  RouteTablePublic: 
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+      - Key: Name
+        Value: 'RoutePublic'
+  RouteTablePublicInternetRoute: 
+    Type: 'AWS::EC2::Route'
+    Properties:
+      RouteTableId: !Ref RouteTablePublic
+      DestinationCidrBlock: '0.0.0.0/0'
+      GatewayId: !Ref InternetGateway
+  RouteTablePrivate: 
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+      - Key: Name
+        Value: 'RoutePrivate'
+  NatGatewayPrivateRoute:
+    Type: 'AWS::EC2::Route'
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      RouteTableId: !Ref RouteTablePrivate
+      NatGatewayId: !Ref NATGatewayB
+  
+## Route Table Association ##
+  RouteTableAssociationAPublic:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref SubnetAPublic
+      RouteTableId: !Ref RouteTablePublic
+
+  RouteTableAssociationBPublic:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref SubnetBPublic
+      RouteTableId: !Ref RouteTablePublic
+
+  RouteTableAssociationCPublic:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref SubnetCPublic
+      RouteTableId: !Ref RouteTablePublic
+
+  RouteTableAssociationAPrivate:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref SubnetAPrivate
+      RouteTableId: !Ref RouteTablePrivate
+
+  RouteTableAssociationBPrivate:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref SubnetBPrivate
+      RouteTableId: !Ref RouteTablePrivate
+
+  RouteTableAssociationCPrivate:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref SubnetCPrivate
+      RouteTableId: !Ref RouteTablePrivate
+
+## ELB Basic ##
+  ELBPublic:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties: 
+      Name: PublicDemo
+      Scheme: internet-facing
+      SecurityGroups:
+        - !Ref SgPublicElb
+      Subnets:
+        - !Ref SubnetAPublic
+        - !Ref SubnetBPublic
+
+  ELBPublicTarget:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Targets:
+        - Id: !Ref EC2Public1
+      VpcId: !Ref VPC
+      Port: 443
+      Protocol: HTTP
+
+  ELBPublicListen:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ELBPublicTarget
+      LoadBalancerArn: !Ref ELBPublic
+      Port: 443
+      Protocol: HTTP
+
+## EC2 Basic ##
+  EC2Public1:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.micro
+      ImageId: ami-055a70ac36a232aeb
+      NetworkInterfaces:
+        - DeviceIndex: "0"
+          SubnetId : !Ref SubnetAPublic
+          GroupSet:
+            - !Ref SgPublic
+      Tags:
+        - Key: Name
+          Value: EC2Public1
+
+  EC2Private1:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.micro
+      ImageId: ami-055a70ac36a232aeb
+      IamInstanceProfile: !Ref EC2PrivateInstanceProfile
+      NetworkInterfaces:
+        - DeviceIndex: "0"
+          SubnetId : !Ref SubnetAPrivate
+          GroupSet:
+            - !Ref SgPrivate
+      Tags:
+        - Key: Name
+          Value: EC2Private1
+
+  EC2PrivateInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EC2Role
+
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument: {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":["ec2.amazonaws.com"]},"Action":["sts:AssumeRole"]}]}
+      Policies:
+        - PolicyDocument: {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"secretsmanager:GetSecretValue","Resource":!Ref RDSSecret}]}
+          PolicyName: AccessSecret
+        - PolicyDocument: {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"sqs:SendMessage","Resource":!GetAtt SQS1.Arn }]}
+          PolicyName: AccessSQS
+          
+## RDS ##
+  RDSPrivate1:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      Engine: mysql
+      DBName: PrivateDB
+      DBInstanceClass: db.t3.small
+      DBSubnetGroupName: !Ref RDSPrivateSubnet
+      AllocatedStorage: 20
+      StorageType: gp2
+      MasterUsername: !Join ['',['{{resolve:secretsmanager:',!Ref RDSSecret,'::username}}']]
+      MasterUserPassword: !Join ['',['{{resolve:secretsmanager:',!Ref RDSSecret,'::password}}']]
+      MultiAZ: true
+      VPCSecurityGroups:
+        - !Ref SgDb
+      Tags:
+        - Key: Name
+          Value: RDSPrivate1
+
+  RDSPrivateSubnet:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties: 
+      DBSubnetGroupDescription: DBPrivate subnets
+      DBSubnetGroupName: DBPrivate
+      SubnetIds: 
+        - !Ref SubnetBPrivate
+        - !Ref SubnetCPrivate
+
+  RDSSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: A test of secrets manager for infviz
+      GenerateSecretString:
+        SecretStringTemplate: '{"username":"admin"}'
+        GenerateStringKey: "password"
+        PasswordLength: 16
+        ExcludeCharacters: '"@\/'
+
+  RDSSecretAttachment:
+    Type: AWS::SecretsManager::SecretTargetAttachment
+    Properties:
+      SecretId: !Ref RDSSecret
+      TargetId: !Ref RDSPrivate1
+      TargetType: AWS::RDS::DBInstance
+
+  RDSSecretPolicy:
+    Type: AWS::SecretsManager::ResourcePolicy
+    Properties:
+      ResourcePolicy: {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"secretsmanager:*","Principal":{"AWS":"arn:aws:iam::315961947194:role/import"},"Resource":"*"}]}
+      SecretId: !Ref RDSSecret
+
+## SQS ##
+  SQS1:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: messageQueue1 
+
+## SNS ##
+  SNSTopic1:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: Demo1Topic
+
+## ElaticSearch ##
+  ESPublic1:
+    DependsOn: ESRole
+    Type: AWS::Elasticsearch::Domain
+    Properties:
+      DomainName: espublic
+      ElasticsearchClusterConfig:
+        DedicatedMasterEnabled: false
+        InstanceCount: 1
+        InstanceType: t2.micro.elasticsearch
+      ElasticsearchVersion: 2.3
+      EBSOptions:
+        EBSEnabled: true
+        VolumeType: standard
+        VolumeSize: 10
+
+  ESRole:
+    Type: AWS::IAM::ServiceLinkedRole
+    Properties:
+      AWSServiceName: es.amazonaws.com
+
+## Security Groups ##
+  SgPublicElb:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for elb public
+      GroupName: ElbPublic
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          Description: Web traffic
+          FromPort: 443
+          ToPort: 443
+          IpProtocol: tcp
+      VpcId: !Ref VPC
+
+  SgPublic:
+    Type: AWS::EC2::SecurityGroup
+    Properties: 
+      GroupDescription: Security group for public servers
+      GroupName: Ec2Public
+      SecurityGroupIngress: 
+        - CidrIp: 10.0.0.0/8
+          Description: Allow internal SSH
+          FromPort: 22
+          ToPort: 22
+          IpProtocol: tcp
+        - SourceSecurityGroupId: !Ref SgPublicElb
+          FromPort: 443
+          ToPort: 443
+          IpProtocol: tcp
+        - CidrIp: 1.2.3.4/32
+          Description: Somebody home
+          FromPort: 22
+          ToPort: 22
+          IpProtocol: tcp
+        - CidrIp: 10.0.0.0/8
+          Description: Allow internal ping
+          FromPort: -1
+          ToPort: -1
+          IpProtocol: icmp
+      VpcId: !Ref VPC
+
+  SgPrivate:
+    Type: AWS::EC2::SecurityGroup
+    Properties: 
+      GroupDescription: Security group for private servers
+      GroupName: Ec2Private
+      SecurityGroupIngress: 
+        - CidrIp: 10.0.0.0/8
+          Description: Allow all ports
+          FromPort: 0
+          ToPort: 65535
+          IpProtocol: tcp
+        - SourceSecurityGroupId: !Ref SgPublic
+          FromPort: 443
+          ToPort: 443
+          IpProtocol: tcp
+        - CidrIp: 10.0.0.0/8
+          Description: Allow internal ping
+          FromPort: -1
+          ToPort: -1
+          IpProtocol: icmp
+      VpcId: !Ref VPC
+
+  SgDb:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+        GroupDescription: Security group for private database
+        GroupName: DbPrivate
+        SecurityGroupIngress:
+          - SourceSecurityGroupId: !Ref SgPrivate
+            FromPort: 3306
+            ToPort: 3306
+            IpProtocol: tcp
+        VpcId: !Ref VPC
+
+  SgEs:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+        GroupDescription: Security group for private elastic search
+        GroupName: EsPrivate
+        SecurityGroupIngress:
+          - CidrIp: 10.0.0.0/8
+            FromPort: 443
+            ToPort: 443
+            IpProtocol: tcp
+        VpcId: !Ref VPC

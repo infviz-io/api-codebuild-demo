@@ -1,0 +1,335 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Setup of Code Build Project to create documents on codecommit pull request
+
+## Parameters ##
+Parameters:
+  CodeCommitArn:
+    Description: ARN of the Code Commit to watch
+    Type: String
+  CodeCommitHttps:
+    Description: HTTPS address of the Code Commit to watch
+    Type: String
+  InfVizCompanyId:
+    Description: Your unique infviz company id
+    Type: String
+  InfVizApiKey:
+    Description: Your unique infviz api key
+    Type: String
+
+## Resources ##
+Resources:
+  # Basic Code Build Project and artifact store
+  ArtifactStore:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  CodeBuildRole:
+    Description: Creating service role in IAM for AWS CodeBuild
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action: sts:AssumeRole
+          Effect: Allow
+          Principal:
+            Service: codebuild.amazonaws.com
+      Policies:
+        - PolicyName: AllowBuild
+          PolicyDocument:
+            Statement:
+              - Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Effect: Allow
+                Resource: '*'
+              - Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Effect: Allow
+                Resource: '*'
+              - Action:
+                  - codecommit:GitPull
+                Effect: Allow
+                Resource: '*'
+              - Action:
+                  - kms:GenerateDataKey*
+                  - kms:Encrypt
+                  - kms:Decrypt
+                Effect: Allow
+                Resource: '*'
+    Type: AWS::IAM::Role
+
+  InfvizRender:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      ServiceRole: !Ref CodeBuildRole
+      Artifacts:
+        Type: S3
+        NamespaceType: BUILD_ID
+        Location: !Ref ArtifactStore
+        Path: codebuild
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:3.0
+        Type: LINUX_CONTAINER
+        EnvironmentVariables:
+          - Name: INFVIZ_COMPANY
+            Type: PLAINTEXT
+            Value: !Ref InfVizCompanyId
+          - Name: INFVIZ_KEY
+            Type: PLAINTEXT
+            Value: !Ref InfVizApiKey
+      Source:
+        Type: CODECOMMIT
+        Location: !Ref CodeCommitHttps
+        BuildSpec: sampleSpec.yaml
+
+  # CloudWatch Events related resources for additional Pull Request related integration
+  PipelineCCEventRule:
+    Type: "AWS::Events::Rule"
+    Properties:
+      Description: "Triggers when builds fail/pass in CodeBuild"
+      EventPattern:
+        source:
+          - "aws.codebuild"
+        detail-type:
+          - "CodeBuild Build State Change"
+        detail:
+          build-status:
+            - "FAILED"
+            - "SUCCEEDED"
+          project-name:
+            - !Ref InfvizRender
+      State: "ENABLED"
+      Targets:
+        - Arn: !GetAtt CodeBuildResultFunction.Arn
+          Id: !Sub "${AWS::StackName}-cc"
+
+  PipelinePREventRule:
+    Type: "AWS::Events::Rule"
+    Properties:
+      Description: "Trigger notifications based on CodeCommit PullRequests"
+      EventPattern:
+        source:
+          - "aws.codecommit"
+        detail-type:
+          - "CodeCommit Pull Request State Change"
+        resources:
+          - !Ref CodeCommitArn
+        detail:
+          event:
+            - "pullRequestSourceBranchUpdated"
+            - "pullRequestCreated"
+      State: "ENABLED"
+      Targets:
+        - Arn: !GetAtt PullRequestFunction.Arn
+          Id: !Sub "${AWS::StackName}-pr"
+        - Arn: !GetAtt InfvizRender.Arn
+          RoleArn: !GetAtt CWERole.Arn
+          Id: !Sub "${AWS::StackName}-pr1"
+          InputTransformer:
+            InputTemplate: |
+              {
+                "sourceVersion": <sourceVersion>,
+                "environmentVariablesOverride": [
+                   {
+                       "name": "pullRequestId",
+                       "value": <pullRequestId>,
+                       "type": "PLAINTEXT"
+                   },
+                   {
+                       "name": "repositoryName",
+                       "value": <repositoryName>,
+                       "type": "PLAINTEXT"
+                   },
+                   {
+                       "name": "sourceCommit",
+                       "value": <sourceCommit>,
+                       "type": "PLAINTEXT"
+                   },
+                   {
+                       "name": "destinationCommit",
+                       "value": <destinationCommit>,
+                       "type": "PLAINTEXT"
+                   }
+                ]
+              }
+            InputPathsMap:
+              sourceVersion: "$.detail.sourceCommit"
+              pullRequestId: "$.detail.pullRequestId"
+              repositoryName: "$.detail.repositoryNames[0]"
+              sourceCommit: "$.detail.sourceCommit"
+              destinationCommit: "$.detail.destinationCommit"
+
+  PermissionForEventsToInvokeLambdaPR:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      FunctionName: !Ref PullRequestFunction
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn: !GetAtt PipelinePREventRule.Arn
+
+  PermissionForEventsToInvokeLambdaCC:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      FunctionName: !Ref CodeBuildResultFunction
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn: !GetAtt PipelineCCEventRule.Arn
+
+  # Lambda related resources for additional Pull Request related integration
+  LambdaManagedPolicy:
+      Type: "AWS::IAM::ManagedPolicy"
+      Properties:
+        Description: "Lambda Policy used for this stack"
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Action:
+                - "codebuild:*"
+                - "codecommit:*"
+                - "logs:CreateLogGroup"
+                - "logs:CreateLogStream"
+                - "logs:PutLogEvents"
+                - "logs:GetLogEvents"
+                - "s3:list*"
+              Resource: "*"
+
+  LambdaPullRequestRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      ManagedPolicyArns:
+        - !Ref "LambdaManagedPolicy"
+
+  PullRequestFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Triggers CodeBuild on PR's in codecommit
+      Handler: index.lambda_handler
+      MemorySize: 128
+      Role: !GetAtt LambdaPullRequestRole.Arn
+      Runtime: python3.6
+      Code:
+        ZipFile: |
+          import datetime
+          import boto3
+
+          codecommit_client = boto3.client('codecommit')
+
+          def lambda_handler(event, context):
+              if event['detail']['event'] in ['pullRequestSourceBranchUpdated', 'pullRequestCreated']:
+                  pull_request_id = event['detail']['pullRequestId']
+                  repository_name = event['detail']['repositoryNames'][0]
+                  source_commit = event['detail']['sourceCommit']
+                  destination_commit = event['detail']['destinationCommit']
+                  codecommit_client.post_comment_for_pull_request(
+                    pullRequestId = pull_request_id,
+                    repositoryName = repository_name,
+                    beforeCommitId = source_commit,
+                    afterCommitId = destination_commit,
+                    content = '**Build started at {}**'.format(datetime.datetime.utcnow().time())
+                  )
+
+  CodeBuildResultFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Triggers And updates CodeCommit with information from PR's
+      Handler: index.lambda_handler
+      MemorySize: 128
+      Role: !GetAtt LambdaPullRequestRole.Arn
+      Runtime: python3.6
+      Timeout: 10
+      Code:
+        ZipFile: |
+          import boto3
+          codecommit_client = boto3.client('codecommit')
+          def lambda_handler(event, context):
+              for item in event['detail']['additional-information']['environment']['environment-variables']:
+                  if item['name'] == 'pullRequestId': pull_request_id = item['value']
+                  if item['name'] == 'repositoryName': repository_name = item['value']
+                  if item['name'] == 'sourceCommit': before_commit_id = item['value']
+                  if item['name'] == 'destinationCommit': after_commit_id = item['value']
+              s3_prefix = 's3-{0}'.format(event['region']) if event['region'] != 'us-east-1' else 's3'
+              for phase in event['detail']['additional-information']['phases']:
+                  if phase.get('phase-status') == 'FAILED':
+                      #badge = 'https://{0}.amazonaws.com/codefactory-{1}-prod-default-build-badges/failing.svg'.format(s3_prefix, event['region'])
+                      #content = '![Failing]({0} "Failing") - See the [Logs]({1})'.format(badge, event['detail']['additional-information']['logs']['deep-link'])
+                      content = 'FAILED - See the [Logs](%s)' %(event['detail']['additional-information']['logs']['deep-link'])
+                      break
+                  else:
+                      #badge = 'https://{0}.amazonaws.com/codefactory-{1}-prod-default-build-badges/passing.svg'.format(s3_prefix, event['region'])
+                      #content = '![Passing]({0} "Passing") - See the [Logs]({1})'.format(badge, event['detail']['additional-information']['logs']['deep-link'])
+                      try:
+                          s3Location=event['detail']['additional-information']['artifact']['location']
+                      except Exception as e:
+                          print("Unable to find artifacts folder (%s)" %(e))
+                          s3Location=""
+                      if s3Location!="":
+                          s3Base='https://s3.console.aws.amazon.com/s3/object'
+                          s3Client = boto3.client('s3')
+                          s3LocationLite=s3Location.replace('arn:aws:s3:::','')
+                          s3Bucket=s3LocationLite.split('/')[0]
+                          s3Key=s3LocationLite.replace(s3Bucket,'')[1:]
+                          s3Files=s3Client.list_objects_v2(Bucket=s3Bucket, Prefix=s3Key)
+                          s3Output=""
+                          for s3File in s3Files['Contents']:
+                              s3FileKey=s3File['Key']
+                              if '.png' in s3FileKey or '.svg' in s3FileKey or '.html' in s3FileKey or '.pdf' in s3FileKey or '.md' in s3FileKey:
+                                  s3Url="%s/%s/%s" %(s3Base,s3Bucket,s3FileKey)
+                                  s3Filename=s3FileKey.split('/')[-1]
+                                  s3Output+="* [%s](%s)\n" %(s3Filename,s3Url)
+                          content = 'PASSED - S3 location see:\n%s' %(s3Output)
+                      else:
+                          content = 'PASSED - No Artifacts Found'
+              codecommit_client.post_comment_for_pull_request(
+                pullRequestId = pull_request_id,
+                repositoryName = repository_name,
+                beforeCommitId = before_commit_id,
+                afterCommitId = after_commit_id,
+                content = content
+              )
+
+  CWEManagedPolicy:
+    Type: "AWS::IAM::ManagedPolicy"
+    Properties:
+      Description: "CloudWatch Events Policy used for this stack"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Action:
+              - "codebuild:StartBuild"
+            Resource: "*"
+  CWERole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "events.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      ManagedPolicyArns:
+        - !Ref "CWEManagedPolicy"
+
+
+
+
