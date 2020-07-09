@@ -20,12 +20,12 @@ phases:
       - echo "Build phase"
       # Option 1: Leverage infviz script to interact with the apis
       - echo "OPTION 1 - Use the infviz generate helper"
-      - curl https://studio.infviz.io/helper/generate/generate.py --output generate.py
-      - python3 generate.py -c ${INFVIZ_COMPANY} -k ${INFVIZ_KEY} -t demo.yaml -p demo-params.json -o 'svg,pdf'
+      - curl https://studio.infviz.io/misc/api_helper/infviz_api_helper.py --output infviz_api_helper.py
+      - python3 infviz_api_helper.py -c ${INFVIZ_COMPANY} -k ${INFVIZ_KEY} -t demo.yaml -p demo-params.json -o 'svg,pdf'
       # Option 2: Interact with infviz apis directly
       - echo "OPTION 2 - Use direct infviz api"
       - if [ ! -d "infviz" ]; then mkdir infviz; fi
-      - 'curl https://api.studio.infviz.io/auto/company/${INFVIZ_COMPANY}/aws/html -X POST --data-binary @demo.yaml -H "x-api-key: ${INFVIZ_KEY}" --output ./infviz/demo.yaml.html'
+      - 'curl https://api.infviz.io/v1/company/${INFVIZ_COMPANY}/aws/html -X POST --data-binary @demo.yaml -H "x-api-key: ${INFVIZ_KEY}" --output ./infviz/demo.yaml.html'
 
 artifacts:
   base-directory: infviz
